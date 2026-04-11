@@ -12,6 +12,8 @@ import (
 )
 
 var (
+	version = "dev"
+
 	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("62"))
 	hintStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Faint(true)
@@ -510,6 +512,13 @@ func (m model) View() string {
 }
 
 func main() {
+	for _, a := range os.Args[1:] {
+		switch a {
+		case "-v", "-version", "--version":
+			fmt.Println(version)
+			return
+		}
+	}
 	p := tea.NewProgram(newModel(), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Println(err)

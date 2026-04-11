@@ -1,0 +1,49 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: .
+    binary: tzc
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "tzc_{{.Version}}_{{.Os}}_{{.Arch}}"
+
+brews:
+  - name: tzc
+    repository:
+      owner: kjhaber
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/kjhaber/tzc
+    description: "Timezone converter TUI for the terminal"
+    license: MIT
+    install: |
+      bin.install "tzc"
+    test: |
+      system "#{bin}/tzc", "--version"
+
+checksum:
+  name_template: "tzc_{{.Version}}_checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
