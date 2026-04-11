@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -26,12 +27,15 @@ var (
 	dimRowStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240")).
 			Faint(true)
+
+	timeInputPlaceholder = "e.g. 9pm · 2026-04-10 21:15 · 9:15pm 2026-04-10"
 )
 
 type zoneRow struct {
 	label string
 	loc   *time.Location
 	ti    textinput.Model
+	fixed bool // UTC and Local only
 }
 
 type model struct {
@@ -39,6 +43,11 @@ type model struct {
 	focus   int
 	invalid bool
 	err     string
+	termW   int
+
+	addingZone bool
+	addZoneTI  textinput.Model
+	addZoneErr string
 }
 
 func localDisplayLabel() string {
@@ -52,7 +61,7 @@ func localDisplayLabel() string {
 	return "Local (" + name + ")"
 }
 
-func zoneDefinitions() []struct {
+func fixedZoneDefinitions() []struct {
 	label string
 	loc   *time.Location
 } {
@@ -63,6 +72,63 @@ func zoneDefinitions() []struct {
 		{"UTC", time.UTC},
 		{localDisplayLabel(), time.Local},
 	}
+}
+
+func userZoneNames(rows []zoneRow) []string {
+	var n []string
+	for _, r := range rows {
+		if !r.fixed {
+			n = append(n, r.loc.String())
+		}
+	}
+	return n
+}
+
+func newRowTextInput(width int, focused bool) textinput.Model {
+	ti := textinput.New()
+	ti.Placeholder = timeInputPlaceholder
+	ti.CharLimit = 512
+	ti.Width = width
+	if focused {
+		ti.Focus()
+	} else {
+		ti.Blur()
+	}
+	return ti
+}
+
+func buildZoneRows(extraNames []string, termW int) []zoneRow {
+	w := inputWidthForRows(nil, termW) // first pass without extras for width estimate
+	defs := fixedZoneDefinitions()
+	rows := make([]zoneRow, 0, len(defs)+len(extraNames))
+	for i := range defs {
+		ti := newRowTextInput(w, i == 0)
+		rows = append(rows, zoneRow{
+			label: defs[i].label,
+			loc:   defs[i].loc,
+			ti:    ti,
+			fixed: true,
+		})
+	}
+	for _, name := range extraNames {
+		loc, err := time.LoadLocation(name)
+		if err != nil {
+			continue
+		}
+		ti := newRowTextInput(w, false)
+		ti.Blur()
+		rows = append(rows, zoneRow{
+			label: name,
+			loc:   loc,
+			ti:    ti,
+			fixed: false,
+		})
+	}
+	w = inputWidthForRows(rows, termW)
+	for i := range rows {
+		rows[i].ti.Width = w
+	}
+	return rows
 }
 
 func maxLabelWidth(rows []zoneRow) int {
@@ -103,23 +169,50 @@ func syncRowInputStyles(rows []zoneRow, focus int) {
 	}
 }
 
-func newModel() model {
-	defs := zoneDefinitions()
-	rows := make([]zoneRow, len(defs))
-	placeholder := "e.g. 9pm · 2026-04-10 21:15 · 9:15pm 2026-04-10"
-	for i := range defs {
-		ti := textinput.New()
-		ti.Placeholder = placeholder
-		ti.CharLimit = 512
-		if i == 0 {
-			ti.Focus()
-		} else {
-			ti.Blur()
-		}
-		rows[i] = zoneRow{label: defs[i].label, loc: defs[i].loc, ti: ti}
+func newAddZoneTextInput(termW int) textinput.Model {
+	ti := textinput.New()
+	ti.Placeholder = "e.g. America/Denver · eastern · mountain"
+	ti.CharLimit = 256
+	ti.Width = addZoneFieldWidth(termW)
+	ti.Blur()
+	styleTextInput(&ti, false)
+	return ti
+}
+
+func addZoneFieldWidth(termW int) int {
+	w := termW - 8
+	if w < 24 {
+		w = 24
 	}
+	return w
+}
+
+func inputWidthForRows(rows []zoneRow, termW int) int {
+	lw := maxLabelWidth(rows)
+	// term margin, focus gutter, label column, gap before textinput
+	w := termW - 4 - focusGutterWidth() - lw - 2
+	if w < 24 {
+		w = 24
+	}
+	return w
+}
+
+func newModel() model {
+	extra, err := loadExtraZoneNames()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "tzc: loading saved zones: %v\n", err)
+		extra = nil
+	}
+	termW := 80
+	rows := buildZoneRows(extra, termW)
 	syncRowInputStyles(rows, 0)
-	return model{rows: rows}
+	return model{
+		rows:       rows,
+		focus:      0,
+		termW:      termW,
+		addZoneTI:  newAddZoneTextInput(termW),
+		addingZone: false,
+	}
 }
 
 func (m model) setFocus(i int) model {
@@ -144,14 +237,8 @@ func (m model) stepFocus(delta int) model {
 	return m.setFocus(m.focus + delta)
 }
 
-func (m model) inputWidth(termW int) int {
-	lw := maxLabelWidth(m.rows)
-	// term margin, focus gutter, label column, gap before textinput
-	w := termW - 4 - focusGutterWidth() - lw - 2
-	if w < 24 {
-		w = 24
-	}
-	return w
+func (m model) inputWidth() int {
+	return inputWidthForRows(m.rows, m.termW)
 }
 
 func (m model) commit() model {
@@ -198,6 +285,100 @@ func (m model) commit() model {
 	return m
 }
 
+func (m model) openAddOverlay() model {
+	m.addingZone = true
+	m.addZoneErr = ""
+	m.addZoneTI.SetValue("")
+	m.addZoneTI.Width = addZoneFieldWidth(m.termW)
+	m.addZoneTI.Focus()
+	styleTextInput(&m.addZoneTI, true)
+	for j := range m.rows {
+		m.rows[j].ti.Blur()
+		styleTextInput(&m.rows[j].ti, false)
+	}
+	return m
+}
+
+func (m model) closeAddOverlay() model {
+	m.addingZone = false
+	m.addZoneTI.Blur()
+	styleTextInput(&m.addZoneTI, false)
+	m.addZoneErr = ""
+	return m.setFocus(m.focus)
+}
+
+func (m model) removeFocusedUserZone() model {
+	if m.rows[m.focus].fixed {
+		return m
+	}
+	i := m.focus
+	next := make([]zoneRow, 0, len(m.rows)-1)
+	next = append(next, m.rows[:i]...)
+	next = append(next, m.rows[i+1:]...)
+	names := userZoneNames(next)
+	if err := saveExtraZoneNames(names); err != nil {
+		m.err = err.Error()
+		return m
+	}
+	m.err = ""
+	m.rows = next
+	if m.focus >= len(m.rows) {
+		m.focus = len(m.rows) - 1
+	}
+	w := m.inputWidth()
+	for j := range m.rows {
+		m.rows[j].ti.Width = w
+	}
+	return m.setFocus(m.focus)
+}
+
+func (m model) confirmAddZone() (model, tea.Cmd) {
+	s := strings.TrimSpace(m.addZoneTI.Value())
+	if s == "" {
+		m.addZoneErr = "enter a zone name"
+		return m, textinput.Blink
+	}
+	loc, canon, err := ParseZoneSpecifier(s)
+	if err != nil {
+		m.addZoneErr = err.Error()
+		return m, textinput.Blink
+	}
+	for _, r := range m.rows {
+		if r.loc.String() == canon {
+			m.addZoneErr = "already in list"
+			return m, textinput.Blink
+		}
+	}
+	w := m.inputWidth()
+	ti := newRowTextInput(w, false)
+	ti.Blur()
+	newRow := zoneRow{label: canon, loc: loc, ti: ti, fixed: false}
+	next := append(append([]zoneRow{}, m.rows...), newRow)
+	names := userZoneNames(next)
+	if err := saveExtraZoneNames(names); err != nil {
+		m.addZoneErr = err.Error()
+		return m, textinput.Blink
+	}
+	m.rows = next
+	m.focus = len(m.rows) - 1
+	m = m.closeAddOverlay()
+	return m, textinput.Blink
+}
+
+func (m model) updateAddZoneOverlay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m = m.closeAddOverlay()
+		return m, textinput.Blink
+	case "enter":
+		return m.confirmAddZone()
+	}
+	var cmd tea.Cmd
+	m.addZoneTI, cmd = m.addZoneTI.Update(msg)
+	m.addZoneErr = ""
+	return m, cmd
+}
+
 func (m model) Init() tea.Cmd {
 	return textinput.Blink
 }
@@ -205,15 +386,21 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		w := m.inputWidth(msg.Width)
+		m.termW = msg.Width
+		w := m.inputWidth()
 		for i := range m.rows {
 			m.rows[i].ti.Width = w
 		}
+		m.addZoneTI.Width = addZoneFieldWidth(m.termW)
 		return m, nil
 
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyCtrlC {
 			return m, tea.Quit
+		}
+
+		if m.addingZone {
+			return m.updateAddZoneOverlay(msg)
 		}
 
 		switch msg.String() {
@@ -244,6 +431,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "down":
 			m = m.stepFocus(1)
 			return m, textinput.Blink
+
+		case "+":
+			m = m.openAddOverlay()
+			return m, textinput.Blink
+
+		case "-":
+			if !m.rows[m.focus].fixed && strings.TrimSpace(m.rows[m.focus].ti.Value()) == "" {
+				return m.removeFocusedUserZone(), textinput.Blink
+			}
+		case "ctrl+d":
+			if !m.rows[m.focus].fixed {
+				return m.removeFocusedUserZone(), textinput.Blink
+			}
 		}
 
 		m.invalid = false
@@ -259,7 +459,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) View() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("tzc") + " " + hintStyle.Render("Time zone converter") + "\n")
-	b.WriteString(hintStyle.Render("↑/↓ · Tab · Shift+Tab field   Enter sync   Esc clear all   Ctrl+C quit") + "\n\n")
+	b.WriteString(hintStyle.Render("↑/↓ · Tab · Shift+Tab field   Enter sync   Esc clear   +/- add/remove zone   Ctrl+C quit") + "\n\n")
 
 	lw := maxLabelWidth(m.rows)
 	gw := focusGutterWidth()
@@ -273,13 +473,15 @@ func (m model) View() string {
 		labelCol := z.label + strings.Repeat(" ", pad)
 
 		gutter := strings.Repeat(" ", gw)
-		if i == m.focus {
+		if i == m.focus && !m.addingZone {
 			gutter = focusBarStyle.Render("▌") + " "
 		}
 
 		body := labelCol + "  " + z.ti.View()
 		var line string
 		switch {
+		case m.addingZone:
+			line = gutter + dimRowStyle.Render(body)
 		case i == m.focus:
 			line = gutter + focusLabelStyle.Render(labelCol) + "  " + z.ti.View()
 		case m.invalid:
@@ -292,6 +494,17 @@ func (m model) View() string {
 
 	if m.invalid && m.err != "" {
 		b.WriteString("\n" + errStyle.Render(m.err) + "\n")
+	} else if m.err != "" {
+		b.WriteString("\n" + errStyle.Render(m.err) + "\n")
+	}
+
+	if m.addingZone {
+		b.WriteString("\n")
+		b.WriteString(hintStyle.Render("Add timezone   Enter save   Esc cancel") + "\n")
+		b.WriteString(focusBarStyle.Render("▌") + "  " + m.addZoneTI.View() + "\n")
+		if m.addZoneErr != "" {
+			b.WriteString(errStyle.Render(m.addZoneErr) + "\n")
+		}
 	}
 	return b.String()
 }
