@@ -25,6 +25,7 @@ archives:
 
 brews:
   - name: tzc
+    directory: Formula
     repository:
       owner: kjhaber
       name: homebrew-tap
