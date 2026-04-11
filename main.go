@@ -15,20 +15,17 @@ var (
 	hintStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Faint(true)
 
-	labelW = 8
-
 	// Focus: left bar + bold label (no full-row background) so textinput placeholder/cursor
 	// lipgloss does not fight an outer Background().
 	focusBarStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("62")).Bold(true)
 	focusLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
 
-	rowStyle = lipgloss.NewStyle().Padding(0, 1)
+	rowStyle = lipgloss.NewStyle()
 
 	// Non-focused rows after a failed sync (Enter).
 	dimRowStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240")).
-			Faint(true).
-			Padding(0, 1)
+			Faint(true)
 )
 
 type zoneRow struct {
@@ -44,6 +41,17 @@ type model struct {
 	err     string
 }
 
+func localDisplayLabel() string {
+	name, _ := time.Now().In(time.Local).Zone()
+	if name == "" {
+		name = time.Now().In(time.Local).Format("MST")
+	}
+	if name == "" {
+		return "Local"
+	}
+	return "Local (" + name + ")"
+}
+
 func zoneDefinitions() []struct {
 	label string
 	loc   *time.Location
@@ -53,8 +61,26 @@ func zoneDefinitions() []struct {
 		loc   *time.Location
 	}{
 		{"UTC", time.UTC},
-		{"Local", time.Local},
+		{localDisplayLabel(), time.Local},
 	}
+}
+
+func maxLabelWidth(rows []zoneRow) int {
+	n := 0
+	for _, r := range rows {
+		if w := lipgloss.Width(r.label); w > n {
+			n = w
+		}
+	}
+	if n < 3 {
+		n = 3
+	}
+	return n
+}
+
+// focusGutterWidth is the visual width of the focused gutter (▌ + space).
+func focusGutterWidth() int {
+	return lipgloss.Width(focusBarStyle.Render("▌") + " ")
 }
 
 func styleTextInput(ti *textinput.Model, focused bool) {
@@ -119,7 +145,9 @@ func (m model) stepFocus(delta int) model {
 }
 
 func (m model) inputWidth(termW int) int {
-	w := termW - 4 - labelW - 2
+	lw := maxLabelWidth(m.rows)
+	// term margin, focus gutter, label column, gap before textinput
+	w := termW - 4 - focusGutterWidth() - lw - 2
 	if w < 24 {
 		w = 24
 	}
@@ -233,22 +261,31 @@ func (m model) View() string {
 	b.WriteString(titleStyle.Render("tzc") + " " + hintStyle.Render("Time zone converter") + "\n")
 	b.WriteString(hintStyle.Render("↑/↓ · Tab · Shift+Tab field   Enter sync   Esc clear all   Ctrl+C quit") + "\n\n")
 
+	lw := maxLabelWidth(m.rows)
+	gw := focusGutterWidth()
 	for i := range m.rows {
 		z := m.rows[i]
-		pad := labelW - len(z.label)
+		labelVis := lipgloss.Width(z.label)
+		pad := lw - labelVis
 		if pad < 0 {
 			pad = 0
 		}
 		labelCol := z.label + strings.Repeat(" ", pad)
 
+		gutter := strings.Repeat(" ", gw)
+		if i == m.focus {
+			gutter = focusBarStyle.Render("▌") + " "
+		}
+
+		body := labelCol + "  " + z.ti.View()
 		var line string
 		switch {
 		case i == m.focus:
-			line = focusBarStyle.Render("▌") + " " + focusLabelStyle.Render(labelCol) + "  " + z.ti.View()
+			line = gutter + focusLabelStyle.Render(labelCol) + "  " + z.ti.View()
 		case m.invalid:
-			line = dimRowStyle.Render(fmt.Sprintf("%s  %s", labelCol, z.ti.View()))
+			line = gutter + dimRowStyle.Render(body)
 		default:
-			line = rowStyle.Render(fmt.Sprintf("%s  %s", labelCol, z.ti.View()))
+			line = gutter + rowStyle.Render(body)
 		}
 		b.WriteString(line + "\n")
 	}
