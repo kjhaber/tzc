@@ -58,6 +58,34 @@ func TestCanonicalTimestampInput(t *testing.T) {
 	}
 }
 
+func TestParseTimestamp_now(t *testing.T) {
+	before := time.Now()
+	r, err := ParseTimestamp("now", time.Time{}, time.UTC)
+	after := time.Now()
+	if err != nil {
+		t.Fatalf("ParseTimestamp(%q): %v", "now", err)
+	}
+	if r.Time.Before(before) || r.Time.After(after) {
+		t.Fatalf("ParseTimestamp(%q) = %v, want between %v and %v", "now", r.Time, before, after)
+	}
+	if r.HadTZ {
+		t.Fatalf("ParseTimestamp(%q).HadTZ = true, want false", "now")
+	}
+
+	// Case insensitivity
+	for _, input := range []string{"NOW", "Now", "  now  "} {
+		before = time.Now()
+		r2, err := ParseTimestamp(input, time.Time{}, time.UTC)
+		after = time.Now()
+		if err != nil {
+			t.Fatalf("ParseTimestamp(%q): %v", input, err)
+		}
+		if r2.Time.Before(before) || r2.Time.After(after) {
+			t.Fatalf("ParseTimestamp(%q) = %v, want recent time", input, r2.Time)
+		}
+	}
+}
+
 func TestParseTimestampRejectYearAsUnix(t *testing.T) {
 	_, err := ParseTimestamp("2024", time.Now(), time.UTC)
 	if err == nil {
@@ -88,6 +116,16 @@ func TestFormatMatchingInputStyle_timeThenISO(t *testing.T) {
 	tm := time.Date(2026, 4, 10, 21, 15, 0, 0, time.UTC)
 	got := FormatMatchingInputStyle(tm, time.UTC, "9:15pm 2026-04-10")
 	want := "2026-04-10 9:15pm"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestFormatMatchingInputStyle_preserveTZAbbrev(t *testing.T) {
+	pdt := time.FixedZone("PDT", -7*3600)
+	tm := time.Date(2026, 4, 14, 2, 28, 0, 0, time.UTC)
+	got := FormatMatchingInputStyle(tm, pdt, "2026-04-14 02:28 UTC")
+	want := "2026-04-13 19:28 PDT"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}

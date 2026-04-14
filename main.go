@@ -267,7 +267,7 @@ func (m model) commit() model {
 	can := CanonicalTimestampInput(s)
 	focused := &m.rows[i].ti
 	focusChanged := false
-	if AssumedTodayDate(r) {
+	if AssumedTodayDate(r) || strings.EqualFold(s, "now") {
 		focused.SetValue(FormatMatchingInputStyle(t, loc, can))
 		focusChanged = true
 	} else if len(strings.Fields(s)) == 1 && s != can {

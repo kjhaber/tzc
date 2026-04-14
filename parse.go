@@ -36,12 +36,16 @@ func AssumedTodayDate(r ParseResult) bool {
 
 var (
 	// Time-of-day only: "22:08", "9:25:30", "10:08pm", "9:25:30pm", or hour-only "9pm" / "12 am".
-	reTimeOnly    = regexp.MustCompile(`(?i)^\s*(\d{1,2}:\d{2}(:\d{2})?(\s*[ap]m)?|\d{1,2}\s*(am|pm))\s*$`)
-	reHourOnly12  = regexp.MustCompile(`(?i)^\d{1,2}\s*(am|pm)$`)
-	reMDY         = regexp.MustCompile(`^\s*(\d{1,2})/(\d{1,2})/(\d{4})(?:\s+(.*))?\s*$`)
-	reHasTZ       = regexp.MustCompile(`(?i)(z\b|[+-]\d{2}:?\d{2}\b|utc\b|gmt\b|[a-z]{2,5}\b)`)
-	reHasHMS      = regexp.MustCompile(`(?i)\d{1,2}:\d{2}:\d{2}`)
-	reISOStart    = regexp.MustCompile(`^\d{4}-\d{1,2}-\d{1,2}`)
+	reTimeOnly   = regexp.MustCompile(`(?i)^\s*(\d{1,2}:\d{2}(:\d{2})?(\s*[ap]m)?|\d{1,2}\s*(am|pm))\s*$`)
+	reHourOnly12 = regexp.MustCompile(`(?i)^\d{1,2}\s*(am|pm)$`)
+	reMDY        = regexp.MustCompile(`^\s*(\d{1,2})/(\d{1,2})/(\d{4})(?:\s+(.*))?\s*$`)
+	reHasTZ      = regexp.MustCompile(`(?i)(z\b|[+-]\d{2}:?\d{2}\b|utc\b|gmt\b|[a-z]{2,5}\b)`)
+	reHasHMS     = regexp.MustCompile(`(?i)\d{1,2}:\d{2}:\d{2}`)
+	reISOStart   = regexp.MustCompile(`^\d{4}-\d{1,2}-\d{1,2}`)
+	reISOTSep    = regexp.MustCompile(`^\d{4}-\d{1,2}-\d{1,2}T`) // T as ISO-8601 separator (not e.g. "UTC")
+	// reISOHasTZ detects a TZ token (Z, offset, or 3-5-letter abbreviation) preceded by whitespace.
+	// Requires 3+ letters to avoid false-positives on "am"/"pm".
+	reISOHasTZ    = regexp.MustCompile(`(?i)\s+(z\b|[+-]\d{2}:?\d{2}\b|utc\b|gmt\b|[a-z]{3,5}\b)`)
 	reUnixLiteral = regexp.MustCompile(`^\d+(\.\d+)?$`)
 	reYMDOnly     = regexp.MustCompile(`^\d{4}-\d{1,2}-\d{1,2}$`)
 )
@@ -64,6 +68,14 @@ func ParseTimestamp(raw string, baseDate time.Time, assumeLoc *time.Location) (P
 		baseDate = time.Now().In(assumeLoc)
 	}
 	baseDate = baseDate.In(assumeLoc)
+
+	if strings.EqualFold(s, "now") {
+		return ParseResult{
+			Time:          time.Now().In(assumeLoc),
+			HadTZ:         false,
+			InterpretedTZ: "assumed: " + locLabel(assumeLoc),
+		}, nil
+	}
 
 	if t, err := parseUnix(s); err == nil {
 		res.Time = t
@@ -362,21 +374,26 @@ func FormatMatchingInputStyle(t time.Time, loc *time.Location, raw string) strin
 		}
 		return tt.Format("1/2/2006 15:04")
 
-	case strings.Contains(s0, "T"):
+	case reISOTSep.MatchString(s0):
 		// RFC3339 / ISO8601 with a T separator — second precision, no fractional seconds.
 		return trimSubsecondFromRFC(tt.Format(time.RFC3339Nano))
 
 	case reISOStart.MatchString(s0):
-		if use12 {
-			if hasSec {
-				return tt.Format("2006-01-02 3:04:05pm")
-			}
-			return tt.Format("2006-01-02 3:04pm")
+		var layout string
+		switch {
+		case use12 && hasSec:
+			layout = "2006-01-02 3:04:05pm"
+		case use12:
+			layout = "2006-01-02 3:04pm"
+		case hasSec:
+			layout = "2006-01-02 15:04:05"
+		default:
+			layout = "2006-01-02 15:04"
 		}
-		if hasSec {
-			return tt.Format("2006-01-02 15:04:05")
+		if reISOHasTZ.MatchString(s0) {
+			layout += " MST"
 		}
-		return tt.Format("2006-01-02 15:04")
+		return tt.Format(layout)
 
 	case isLikelyUnixLiteral(s0):
 		return tt.Format("2006-01-02 15:04:05 MST")
