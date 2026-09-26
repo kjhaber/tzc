@@ -50,6 +50,26 @@ type model struct {
 	addingZone bool
 	addZoneTI  textinput.Model
 	addZoneErr string
+
+	pendingExit bool
+	exitArmSeq  int
+}
+
+// exitArmTimeoutMsg fires ~1s after Esc arms the pending-exit state. seq guards
+// against a stale timer from an earlier arm clearing a state armed after it.
+type exitArmTimeoutMsg struct {
+	seq int
+}
+
+const exitArmWindow = time.Second
+
+func (m model) hasAnyInput() bool {
+	for _, r := range m.rows {
+		if strings.TrimSpace(r.ti.Value()) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func localDisplayLabel() string {
@@ -396,6 +416,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.addZoneTI.Width = addZoneFieldWidth(m.termW)
 		return m, nil
 
+	case exitArmTimeoutMsg:
+		if msg.seq == m.exitArmSeq {
+			m.pendingExit = false
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyCtrlC {
 			return m, tea.Quit
@@ -405,15 +431,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateAddZoneOverlay(msg)
 		}
 
-		switch msg.String() {
-		case "esc":
-			for i := range m.rows {
-				m.rows[i].ti.SetValue("")
+		if msg.String() == "esc" {
+			if m.pendingExit {
+				return m, tea.Quit
 			}
-			m.invalid = false
-			m.err = ""
-			return m, textinput.Blink
+			if m.hasAnyInput() {
+				for i := range m.rows {
+					m.rows[i].ti.SetValue("")
+				}
+				m.invalid = false
+				m.err = ""
+				return m, textinput.Blink
+			}
+			m.pendingExit = true
+			m.exitArmSeq++
+			seq := m.exitArmSeq
+			return m, tea.Tick(exitArmWindow, func(time.Time) tea.Msg {
+				return exitArmTimeoutMsg{seq: seq}
+			})
+		}
+		m.pendingExit = false
 
+		switch msg.String() {
 		case "enter":
 			m = m.commit()
 			return m, textinput.Blink
@@ -461,7 +500,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) View() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("tzc") + " " + hintStyle.Render("Time zone converter") + "\n")
-	b.WriteString(hintStyle.Render("↑/↓ · Tab · Shift+Tab field   Enter sync   Esc clear   +/- add/remove zone   Ctrl+C quit") + "\n\n")
+	b.WriteString(hintStyle.Render("↑/↓ · Tab · Shift+Tab field   Enter sync   Esc clear (twice to quit)   +/- add/remove zone   Ctrl+C quit") + "\n\n")
 
 	lw := maxLabelWidth(m.rows)
 	gw := focusGutterWidth()
@@ -498,6 +537,8 @@ func (m model) View() string {
 		b.WriteString("\n" + errStyle.Render(m.err) + "\n")
 	} else if m.err != "" {
 		b.WriteString("\n" + errStyle.Render(m.err) + "\n")
+	} else if m.pendingExit {
+		b.WriteString("\n" + hintStyle.Render("Press Esc again to exit") + "\n")
 	}
 
 	if m.addingZone {
