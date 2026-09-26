@@ -36,6 +36,14 @@ func TestParseTimestamp(t *testing.T) {
 		{"2026-4-1", utc(2026, 4, 1, 0, 0, 0)},
 		{"2026-4-1 14:30:05", utc(2026, 4, 1, 14, 30, 5)},
 		{"9pm 2026-4-1", utc(2026, 4, 1, 21, 0, 0)},
+		// Written-out / browser-style formats.
+		{"Thu, 10 Sep 2026 19:21:53 GMT", utc(2026, 9, 10, 19, 21, 53)},
+		{"10 Sep 2026 19:21:53 GMT", utc(2026, 9, 10, 19, 21, 53)},
+		{"Sep 10, 2026 19:21:53 GMT", utc(2026, 9, 10, 19, 21, 53)},
+		{"September 10, 2026 7:21:53 PM GMT", utc(2026, 9, 10, 19, 21, 53)},
+		{"Sep 10, 2026", utc(2026, 9, 10, 0, 0, 0)},
+		// Zone abbreviation offsets should apply even though assumeLoc is UTC here.
+		{"10 Sep 2026 7:21:53 PM IST", utc(2026, 9, 10, 13, 51, 53)}, // IST = UTC+5:30
 	}
 
 	for _, tt := range tests {

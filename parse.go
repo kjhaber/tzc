@@ -50,6 +50,119 @@ var (
 	reYMDOnly     = regexp.MustCompile(`^\d{4}-\d{1,2}-\d{1,2}$`)
 )
 
+// zoneAbbrevOffsets maps known timezone abbreviations (uppercase) to a fixed UTC
+// offset in seconds. Go's time.Parse/ParseInLocation only resolve an abbreviation
+// correctly when it happens to match the reference location's own zone data;
+// anything else (e.g. "IST" parsed while assuming a US location) silently comes
+// back as a fake zone at +0000. We use this table to correct that after the fact,
+// so a recognized abbreviation gets the right offset regardless of which zone
+// column the user typed it into. Abbreviations are inherently ambiguous (IST,
+// CST, AST, GST all name more than one real-world zone); we pick the most common
+// interpretation, matching the choices in zoneAliases.
+var zoneAbbrevOffsets = map[string]int{
+	"UTC": 0, "GMT": 0,
+	"EST": -5 * 3600, "EDT": -4 * 3600,
+	"CST": -6 * 3600, "CDT": -5 * 3600,
+	"MST": -7 * 3600, "MDT": -6 * 3600,
+	"PST": -8 * 3600, "PDT": -7 * 3600,
+	"AKST": -9 * 3600, "AKDT": -8 * 3600,
+	"HST": -10 * 3600,
+	"AST": -4 * 3600, "ADT": -3 * 3600,
+	"NST": -3*3600 - 1800, "NDT": -2*3600 - 1800,
+	"BST": 1 * 3600,
+	"CET": 1 * 3600, "CEST": 2 * 3600,
+	"EET": 2 * 3600, "EEST": 3 * 3600,
+	"WET": 0, "WEST": 1 * 3600,
+	"MSK": 3 * 3600,
+	"IST": 5*3600 + 1800,
+	"JST": 9 * 3600, "KST": 9 * 3600,
+	"SGT": 8 * 3600, "HKT": 8 * 3600,
+	"PKT":  5 * 3600,
+	"GST":  4 * 3600,
+	"NPT":  5*3600 + 2700,
+	"AEST": 10 * 3600, "AEDT": 11 * 3600,
+	"ACST": 9*3600 + 1800, "ACDT": 10*3600 + 1800,
+	"AWST": 8 * 3600,
+	"NZST": 12 * 3600, "NZDT": 13 * 3600,
+	"SAST": 2 * 3600, "EAT": 3 * 3600,
+	"BRT": -3 * 3600, "ART": -3 * 3600,
+	"CLT": -4 * 3600, "CLST": -3 * 3600,
+}
+
+// fixKnownZoneAbbrev corrects the offset of a parsed time when its zone abbreviation
+// is one we recognize but which time.Parse/ParseInLocation resolved incorrectly
+// (typically as a fake zone at +0000 because the reference location didn't know it).
+// The wall-clock fields are kept as parsed; only the offset/location is corrected.
+func fixKnownZoneAbbrev(t time.Time) time.Time {
+	name, off := t.Zone()
+	want, ok := zoneAbbrevOffsets[strings.ToUpper(name)]
+	if !ok || want == off {
+		return t
+	}
+	loc := time.FixedZone(name, want)
+	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), loc)
+}
+
+// textualDateLayouts are date-part layouts using month names, optionally with a
+// leading weekday, for inputs like "Thu, 10 Sep 2026" or "September 10, 2026"
+// (e.g. copied from a browser dialog or log file).
+var textualDateLayouts = []string{
+	"Mon, 02 Jan 2006", "Mon, 2 Jan 2006",
+	"Monday, 02 Jan 2006", "Monday, 2 Jan 2006",
+	"Mon Jan 2 2006", "Mon Jan 02 2006",
+	"02 Jan 2006", "2 Jan 2006",
+	"Jan 2, 2006", "Jan 02, 2006",
+	"January 2, 2006", "January 02, 2006",
+	"Jan 2 2006", "January 2 2006",
+}
+
+// textualTimeLayouts are time-of-day layouts (no zone) to pair with textualDateLayouts.
+var textualTimeLayouts = []string{
+	"15:04:05", "15:04",
+	"3:04:05pm", "3:04:05 pm", "3:04:05PM", "3:04:05 PM",
+	"3:04pm", "3:04 pm", "3:04PM", "3:04 PM",
+}
+
+// zoneSuffixes are appended to a date+time layout to additionally accept a
+// trailing zone abbreviation or numeric offset.
+var zoneSuffixes = []string{" MST", " -0700", " -07:00"}
+
+// parseTextualDate handles common non-ISO written-out date formats: standard
+// library reference layouts (RFC1123, RFC850, ANSIC, …) plus generated
+// combinations of textualDateLayouts x textualTimeLayouts, with or without a
+// trailing zone. Returns ok=false if nothing matched.
+func parseTextualDate(s string, assumeLoc *time.Location) (t time.Time, hadTZ bool, desc string, ok bool) {
+	// Layouts with a zone built in.
+	for _, layout := range []string{time.RFC1123, time.RFC1123Z, time.RFC850, time.UnixDate, time.RubyDate} {
+		if pt, err := time.Parse(layout, s); err == nil {
+			return fixKnownZoneAbbrev(pt), true, "from input", true
+		}
+	}
+	// ANSIC has no zone.
+	if pt, err := time.ParseInLocation(time.ANSIC, s, assumeLoc); err == nil {
+		return pt, false, "assumed: " + locLabel(assumeLoc), true
+	}
+
+	for _, d := range textualDateLayouts {
+		// Date only, no time.
+		if pt, err := time.ParseInLocation(d, s, assumeLoc); err == nil {
+			return pt, false, "assumed: " + locLabel(assumeLoc), true
+		}
+		for _, tl := range textualTimeLayouts {
+			layout := d + " " + tl
+			for _, zs := range zoneSuffixes {
+				if pt, err := time.Parse(layout+zs, s); err == nil {
+					return fixKnownZoneAbbrev(pt), true, "from input", true
+				}
+			}
+			if pt, err := time.ParseInLocation(layout, s, assumeLoc); err == nil {
+				return pt, false, "assumed: " + locLabel(assumeLoc), true
+			}
+		}
+	}
+	return time.Time{}, false, "", false
+}
+
 // ParseTimestamp does best-effort parsing of common log/graph timestamps.
 // If the input doesn't specify a timezone, it will be interpreted in assumeLoc.
 // If the input doesn't specify a date (e.g. "10:08pm"), it assumes baseDate in assumeLoc.
@@ -178,21 +291,33 @@ func ParseTimestamp(raw string, baseDate time.Time, assumeLoc *time.Location) (P
 	}
 
 	// As a last attempt, if the string appears to contain tz-ish tokens, try ParseInLocation anyway
-	// (time.ParseInLocation ignores unknown abbreviations; better than giving up).
+	// (time.ParseInLocation ignores unknown abbreviations; better than giving up). Any recognized
+	// abbreviation (see zoneAbbrevOffsets) gets its offset corrected regardless of assumeLoc.
 	if reHasTZ.MatchString(s) {
 		for _, layout := range appendFlexibleISODateLayouts([]string{
 			"2006-01-02 15:04:05 MST",
 			"2006-01-02 15:04 MST",
+			"2006-01-02 3:04:05pm MST",
+			"2006-01-02 3:04pm MST",
 			"2006-01-02T15:04:05 MST",
 			"2006-01-02T15:04 MST",
 		}) {
 			if t, err := time.ParseInLocation(layout, s, assumeLoc); err == nil {
-				res.Time = t
+				res.Time = fixKnownZoneAbbrev(t)
 				res.HadTZ = true
 				res.InterpretedTZ = "from input: abbreviation"
 				return res, nil
 			}
 		}
+	}
+
+	// Written-out formats: "Thu, 10 Sep 2026 19:21:53 GMT" (e.g. from a browser dialog),
+	// "September 10, 2026 7:21:53 PM IST", "10 Sep 2026", RFC1123/RFC850/ANSIC/…
+	if t, hadTZ, desc, ok := parseTextualDate(s, assumeLoc); ok {
+		res.Time = t
+		res.HadTZ = hadTZ
+		res.InterpretedTZ = desc
+		return res, nil
 	}
 
 	return ParseResult{}, fmt.Errorf("could not parse %q", raw)
