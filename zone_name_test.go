@@ -25,6 +25,14 @@ func TestParseZoneSpecifier(t *testing.T) {
 		{"gmt", "UTC"},
 		{"america/new york", "America/New_York"},
 		{"EUROPE/LONDON", "Europe/London"},
+		{"denver", "America/Denver"},
+		{"Denver", "America/Denver"},
+		{"DENVER", "America/Denver"},
+		{"new york", "America/New_York"},
+		{"New_York", "America/New_York"},
+		{"buenos aires", "America/Argentina/Buenos_Aires"},
+		{"port-au-prince", "America/Port-au-Prince"},
+		{"kolkata", "Asia/Kolkata"},
 	}
 	for _, tc := range tests {
 		loc, canon, err := ParseZoneSpecifier(tc.in)

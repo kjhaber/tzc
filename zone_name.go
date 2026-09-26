@@ -111,14 +111,20 @@ var zoneAliases = map[string]string{
 
 // ParseZoneSpecifier resolves a user string to a tz database location.
 // Accepts IANA names (e.g. America/Denver), a few common region/abbreviation
-// aliases (mountain, eastern, ist, …), and IANA names typed with inconsistent
-// casing or spaces instead of underscores (e.g. "america/new york").
+// aliases (mountain, eastern, ist, …), a bare city name from the zone's own
+// path (denver, "new york", …), and IANA names typed with inconsistent casing
+// or spaces instead of underscores (e.g. "america/new york").
 func ParseZoneSpecifier(raw string) (*time.Location, string, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
 		return nil, "", fmt.Errorf("empty zone")
 	}
 	if v, ok := zoneAliases[strings.ToLower(s)]; ok {
+		if loc, err := time.LoadLocation(v); err == nil {
+			return loc, loc.String(), nil
+		}
+	}
+	if v, ok := cityZoneIndex[normalizeCityKey(s)]; ok {
 		if loc, err := time.LoadLocation(v); err == nil {
 			return loc, loc.String(), nil
 		}
